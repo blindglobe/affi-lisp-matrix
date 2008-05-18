@@ -1,0 +1,337 @@
+(in-package :affi)
+
+(declaim (optimize (debug 3)))
+
+(defclass affi ()
+  ;; !!! can constrain types
+  ((const :initarg :const)
+   (coeff :initarg :coeff)
+   (domain :initarg :domain :reader domain)))
+
+(defmethod initialize-instance :after ((affi affi) &key)
+  ;; basic consistency check
+  (with-slots (const coeff domain) affi
+    (assert (and (integerp const)
+		 (typep coeff '(simple-array fixnum (*)))
+		 (typep domain '(simple-array fixnum (*)))
+		 (= (length coeff) (length domain))
+		 (every #'plusp domain)))))
+  
+(defun get-const (affi)
+  "Return the constant in an affine index."
+  (slot-value affi 'const))
+
+(defun get-coeff (affi)
+  "Return the coefficients in an affine index (copy is made)."
+  (copy-into-fixnum-vector (slot-value affi 'coeff)))
+
+(defun get-domain (affi)
+  "Return the domain in an affine index (copy is made)."
+  (copy-into-fixnum-vector (domain affi)))
+
+(defmethod print-object ((obj affi) stream)
+  (with-slots (const coeff domain) obj
+    (print-unreadable-object (obj stream :type t :identity t)
+      (format stream "domain ~a, const ~a, coeff ~a" domain const coeff))))
+
+(defun rank (affi)
+  "Return the rank of an affine index."
+  (length (domain affi)))
+
+(defun size (affi)
+  "Return the size (ie number of integers in the range) of an affine
+index.  Note that size is not necessarily the difference of the
+endpoints of the range, as the range may be non-contiguous."
+  (with-slots (domain) affi
+    (reduce #'* domain)))
+	      
+(defun range (affi)
+  "Return the smallest and the largest integer in the range of an
+affine index."
+  (with-slots (const coeff domain) affi
+    (let ((min const)
+	  (max const))
+      (iter
+	(for c :in-vector coeff)
+	(for d :in-vector domain)
+	(cond
+	  ((plusp c)
+	   (incf max (* c (1- d))))
+	  ((minusp c)
+	   (incf min (* c (1- d))))))
+      (values min max))))
+
+(defgeneric make-affi (object) 
+  (:documentation "Create an affine mapping conforming to the given
+  object."))
+      
+(defmethod make-affi ((dimensions sequence))
+  "Setup a row-major affine mapping with the given dimensions."
+  (let* ((dimensions (copy-into-fixnum-vector dimensions))
+	 (n (length dimensions))
+	 (coeff (make-fixnum-vector n))
+	 (p 1))
+    (assert (plusp n))
+    (iter
+      (for i :from (1- n) :downto 0)
+      (setf (aref coeff i) p)
+      (setf p (* p (aref dimensions i))))
+    (make-instance 'affi :const 0 :coeff coeff :domain dimensions)))
+
+(defmethod make-affi ((array array))
+  "Setup a row-major affine mapping conforming to an array."
+  (make-affi (array-dimensions array)))
+
+(defun make-affi-cm (dimensions)
+  "Setup a _column major_ affine mapping using dimensions."
+  ;; Note: the current implementation does this by reversing a row-major affi
+  (let ((affi (make-affi (reverse dimensions))))
+    (with-slots (coeff domain) affi
+      (setf coeff (reverse coeff))
+      (setf domain (reverse domain)))
+    affi))
+
+(defun calculate-index (affi subscripts)
+  "Calculate the index of a given vector of subscripts."
+  (with-slots (const coeff domain) affi
+    (assert (= (length subscripts) (length domain)))
+    (let ((sum const))
+      (iter
+	(for c :in-vector coeff)
+	(for d :in-vector domain)
+	(for s :in-vector subscripts)
+	(assert (and (<= 0 s) (< s d)))
+	(incf sum (* c s)))
+      sum)))
+
+(defun make-walker (affi &optional initial-subscripts)
+  "Create a walker for an affine index that starts at the given
+subscripts (zeroes by default).  Return two functions: one that
+returns the current index and increments the walker, the other just
+returns the index without any side effects."
+  (with-slots (const coeff domain) affi
+    (let* ((rank (rank affi))
+	   (subscripts (if initial-subscripts
+			   (progn
+			     (assert (= (length initial-subscripts) rank))
+			     (copy-into-fixnum-vector initial-subscripts))
+			   (make-array rank :element-type 'fixnum 
+				       :initial-element 0)))
+	  (index (calculate-index affi subscripts)))
+      (labels ((increment-subscript (i)
+		 (unless index
+		   (return-from increment-subscript))
+		 (let ((c (aref coeff i))
+		       (d (aref domain i)))
+		   (if (= (incf (aref subscripts i)) d)
+		       ;; reached maximum
+		       (if (plusp i)
+			   (progn 
+			     (decf index (* c (1- d)))
+			     (setf (aref subscripts i) 0)
+			     (increment-subscript (1- i)))
+			   (setf index nil))
+		       ;; did not reach maximum
+		       (incf index c))))
+	       (next ()
+		 "Return the current value of index, and step forward."
+		 (let ((index index))
+		   (increment-subscript (1- rank))
+		   index))
+	       (this ()
+		 "Return the current value of index."
+		 index))
+	(values #'next #'this)))))
+
+(defmacro-driver (for var in-affi affi)
+  "Driver for iterate to traverse affine indexes."
+  (let ((walker (gensym "walker"))
+	(kwd (if generate 'generate 'for)))
+    `(progn
+       (with ,walker := (make-walker ,affi))
+       (,kwd ,var next (let ((i (funcall ,walker))) (if i i (terminate)))))))
+
+(defgeneric test-walker (object)
+  (:documentation "Output the indices generated by a walker.  For
+testing purposes."))
+
+(defmethod test-walker ((walker function))
+  "Output the indices generated by a walker.  For testing purposes."
+  (tagbody
+     top
+     (let ((i (funcall walker)))
+       (when i
+	 (format t "~a " i)
+	 (go top))))
+  (format t "~%"))
+
+(defmethod test-walker ((affi affi))
+  "Make and then test a walker."
+  (test-walker (make-walker affi)))
+
+
+(defun permute (affi permutation)
+  "Permute the subscripts of an affine index using the given list."
+  (with-slots (const coeff domain) affi
+    (let* ((rank (rank affi))
+	   (flags (make-array rank :element-type 'bit :initial-element 0))
+	   (new-coeff (make-fixnum-vector rank))
+	   (new-domain (make-fixnum-vector rank)))
+      (assert (= (length permutation) rank))
+      (iter
+	(for p :in permutation)
+	(for i :from 0)
+	;; check if permutation is valid
+	(cond
+	  ((or (< p 0) (<= rank p)) (error "index ~a is out of range" p))
+	  ((plusp (aref flags p)) (error "index ~a occurs at least twice" p))
+	  (t (setf (aref flags p) 1)))
+	;; new indexes
+	(setf (aref new-coeff i) (aref coeff p)
+	      (aref new-domain i) (aref domain p)))
+      ;; create new affi
+      (make-instance 'affi :const const :coeff new-coeff :domain new-domain))))
+
+(defun transpose (affi)
+  "Transpose an affi (needs to be rank 2)."
+  (permute affi '(1 0)))
+
+(defun parse-range (range d)
+  "Parse a range specification, returning two values: the starting
+point, and the length of the range, whose sign determines the
+direction.  [0,d) is the domain.
+
+A range specification is either and atom or a list of two integers.
+Negative integers are interpreted as counted backwards from the right
+edge of the domain, ie i < 0 denotes element d+i.
+
+If range is an atom, then it can be 'all or 'rev, denoting the entire
+range in regular and reversed order, respectively, or refer to a
+single element.
+
+A two-element list denotes an interval, inclusive.  If the first one
+is larger then the second, reverse ordering is used."
+  (flet ((convert-and-check (i)
+	     (cond
+	       ((and (<= 0 i) (< i d)) i)
+	       ((and (minusp i) (<= 0 (+ d i))) (+ d i))
+	       (t (error "subscript ~a is not in [0,~a)" i d)))))
+    (cond
+      ((and (symbolp range) (eq range 'all)) (values 0 d))
+      ((and (symbolp range) (eq range 'rev)) (values (1- d) (- d)))
+      ((integerp range) (values (convert-and-check range) 1))
+      ((and (listp range) (= (length range) 2) (every #'integerp range))
+       (let ((left (convert-and-check (first range)))
+	     (right (convert-and-check (second range))))
+	 (values left (- right left (if (<= left right) -1 1)))))
+      (t (error "can't interpret range ~a" range)))))
+
+(defun subrange (affi range)
+  "Constrain an affine map to a subrange, which is given as a list of
+ranges.  For details, see parse-range.  Return the new affine index."
+  (with-slots (const coeff domain) affi
+    (let* ((rank (rank affi))
+	   (new-const const)
+	   (new-coeff (make-fixnum-vector rank))
+	   (new-domain (make-fixnum-vector rank)))
+      (unless (= (rank affi) (length range))
+	(error "range specification does not match rank of affine index"))
+      (iter
+	(for i :from 0)
+	(for d :in-vector domain)
+	(for c :in-vector coeff)
+	(for r :in range)
+	(multiple-value-bind (start length) (parse-range r d)
+	  (setf (aref new-domain i) (abs length)
+		(aref new-coeff i) (if (minusp length) (- c) c))
+	  (incf new-const (* start c))))
+      (make-instance 'affi :const new-const 
+		     :coeff new-coeff :domain new-domain))))
+
+(defun drop (affi &optional (which t))
+  "Drop the dimensions from the domain which have size 1, provided
+that their index is in `which', or `which' is t.  Return new affine
+index.  If `which' is nil, no dimension is dropped."
+  (unless which
+    ;; we are not allowed to drop any
+    (return-from drop affi))
+  (unless (eq which t)
+    (assert (listp which)))
+  (with-slots (const coeff domain) affi
+    (multiple-value-bind (new-coeff new-domain)
+	(iter
+	  ;; mark dimensions to drop
+	  (for i :from 0)
+	  (for c :in-vector coeff)
+	  (for d :in-vector domain)
+	  (unless (and (= d 1) (or (eq which t) (member i which)))
+	    (collect d :into new-domain)
+	    (collect c :into new-coeff))
+	  (finally (return (values new-coeff new-domain))))
+      (make-instance 'affi :const const
+		     :coeff (copy-into-fixnum-vector new-coeff)
+		     :domain (copy-into-fixnum-vector new-domain)))))
+
+(defun check-conformability (affi1 affi2 &optional (conformability 'strict))
+  "Check that two affine indexes are conformable.  There are three
+types of conformability: `strict' requires that the two domains are
+exactly the same, `dropped' checks if they are the same when we drop
+dimensions of size 1, and `size' just checks the size of the two
+ranges."
+  (flet ((equal-domain (affi1 affi2)
+	   (equalp (domain affi1) (domain affi2))))
+    (ecase conformability
+      (strict (equal-domain affi1 affi2))
+      (dropped (equal-domain (drop affi1 t) (drop affi2 t)))
+      (size (= (reduce #'* (domain affi1))
+	       (reduce #'* (domain affi2)))))))
+
+(defun map-subarray (source target 
+		      &key source-range target-range permutation (drop-which t)
+		      (conformability 'dropped) (key #'identity)
+		      (target-element-type (array-element-type source)))
+  "Map a subarray from source to target, or create a new array (with
+element-type target-element-type) if target is nil.  Return target in
+either case.
+
+source-range and target-range control the ranges (see function
+subrange), permutation controls permutation (see permute).  Any of
+these can be empty, in that case the default affine index (derived
+from source) it not modified with that transformation.
+
+Degenerate dimensions are dropped using the argument drop-which (see
+drop), conformability is determines the type of conformability
+check (see check-conformability).  key is applied to each element."
+  (let ((source-affi (make-affi source))
+	(target-affi))
+    (when source-range
+      (setf source-affi (subrange source-affi source-range)))
+    (when permutation
+      (setf source-affi (permute source-affi permutation)))
+    (when drop-which
+      (setf source-affi (drop source-affi drop-which)))
+    ;; if target is nil, we construct one, following using drop-which
+    ;; to calculate dimension
+    (if target
+	(progn
+	  (setf target-affi (subrange (make-affi target) target-range))
+	  (unless (check-conformability source-affi target-affi conformability)
+	    (error "the source and the target affine indexes are not ~a-conformable"
+		   conformability)))
+	(progn
+	  (when target-range
+	    (error "can't specify target range if target is to be created"))
+	  (setf target-affi (make-affi (coerce (domain source-affi) 'list)))
+	  (setf target (make-array (coerce (domain target-affi) 'list)
+				   :element-type target-element-type))))
+    ;; copy elements
+    (iter
+      (for source-index :in-affi source-affi)
+      (for target-index :in-affi target-affi)
+      (setf (row-major-aref target target-index)
+	    (funcall key (row-major-aref source source-index))))
+    target))
+
+
+;; TODO
+;; - collapsing right edge of affine maps
