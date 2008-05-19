@@ -8,7 +8,7 @@
 
    affi get-const get-coeff get-domain rank size range make-affi
    make-affi-cm calculate-index make-walker in-affi test-walker
-   permute transpose subrange drop check-conformability strict
+   permute transpose subrange drop check-conformability
    map-subarray
       
    ))

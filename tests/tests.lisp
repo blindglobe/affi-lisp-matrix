@@ -19,8 +19,8 @@
 (defparameter *b* (make-array '(10 10) :element-type 'fixnum))
 
 *a2*
-(copy-subarray *a2* nil :source-range '((1 3) 2) :drop-which nil)
-(copy-subarray *a2* nil :permutation '(1 0))
-(copy-subarray *a2* *b* :source-range '((0 3) (-1 -3)) :target-range '(all (1 3)))
+(map-subarray *a2* nil :source-range '((1 3) 2) :drop-which nil)
+(map-subarray *a2* nil :permutation '(1 0))
+(map-subarray *a2* *b* :source-range '((0 3) (-1 -3)) :target-range '((1 4) (1 3)))
 
 (test-walker (make-walker (make-affi-cm '(2 3))))

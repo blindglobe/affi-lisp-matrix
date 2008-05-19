@@ -205,7 +205,7 @@ A range specification is either and atom or a list of two integers.
 Negative integers are interpreted as counted backwards from the right
 edge of the domain, ie i < 0 denotes element d+i.
 
-If range is an atom, then it can be 'all or 'rev, denoting the entire
+If range is an atom, then it can be :all or :rev, denoting the entire
 range in regular and reversed order, respectively, or refer to a
 single element.
 
@@ -217,8 +217,8 @@ is larger then the second, reverse ordering is used."
 	       ((and (minusp i) (<= 0 (+ d i))) (+ d i))
 	       (t (error "subscript ~a is not in [0,~a)" i d)))))
     (cond
-      ((and (symbolp range) (eq range 'all)) (values 0 d))
-      ((and (symbolp range) (eq range 'rev)) (values (1- d) (- d)))
+      ((and (symbolp range) (eq range :all)) (values 0 d))
+      ((and (symbolp range) (eq range :rev)) (values (1- d) (- d)))
       ((integerp range) (values (convert-and-check range) 1))
       ((and (listp range) (= (length range) 2) (every #'integerp range))
        (let ((left (convert-and-check (first range)))
@@ -272,23 +272,23 @@ index.  If `which' is nil, no dimension is dropped."
 		     :coeff (copy-into-fixnum-vector new-coeff)
 		     :domain (copy-into-fixnum-vector new-domain)))))
 
-(defun check-conformability (affi1 affi2 &optional (conformability 'strict))
+(defun check-conformability (affi1 affi2 &optional (conformability :dropped))
   "Check that two affine indexes are conformable.  There are three
-types of conformability: `strict' requires that the two domains are
-exactly the same, `dropped' checks if they are the same when we drop
-dimensions of size 1, and `size' just checks the size of the two
+types of conformability: :strict requires that the two domains are
+exactly the same, :dropped checks if they are the same when we drop
+dimensions of size 1, and :size just checks the size of the two
 ranges."
   (flet ((equal-domain (affi1 affi2)
 	   (equalp (domain affi1) (domain affi2))))
     (ecase conformability
-      (strict (equal-domain affi1 affi2))
-      (dropped (equal-domain (drop affi1 t) (drop affi2 t)))
-      (size (= (reduce #'* (domain affi1))
-	       (reduce #'* (domain affi2)))))))
+      (:strict (equal-domain affi1 affi2))
+      (:dropped (equal-domain (drop affi1 t) (drop affi2 t)))
+      (:size (= (reduce #'* (domain affi1))
+		(reduce #'* (domain affi2)))))))
 
 (defun map-subarray (source target 
 		      &key source-range target-range permutation (drop-which t)
-		      (conformability 'dropped) (key #'identity)
+		      (conformability :dropped) (key #'identity)
 		      (target-element-type (array-element-type source)))
   "Map a subarray from source to target, or create a new array (with
 element-type target-element-type) if target is nil.  Return target in
